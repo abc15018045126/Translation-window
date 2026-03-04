@@ -1,0 +1,87 @@
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"io/ioutil"
+	"os"
+	"strings"
+
+	_ "modernc.org/sqlite"
+)
+
+func main() {
+	os.Remove("dict.db")
+	db, err := sql.Open("sqlite", "dict.db")
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(`
+		CREATE TABLE dict (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			traditional TEXT,
+			simplified TEXT,
+			pinyin TEXT,
+			english TEXT
+		);
+		CREATE INDEX idx_simplified ON dict(simplified);
+		CREATE INDEX idx_traditional ON dict(traditional);
+		CREATE INDEX idx_pinyin ON dict(pinyin);
+	`)
+	if err != nil {
+		panic(err)
+	}
+
+	data, err := ioutil.ReadFile("cedict_ts.u8")
+	if err != nil {
+		panic(err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		panic(err)
+	}
+
+	stmt, err := tx.Prepare("INSERT INTO dict(traditional, simplified, pinyin, english) VALUES (?, ?, ?, ?)")
+	if err != nil {
+		panic(err)
+	}
+	defer stmt.Close()
+
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "#") || len(strings.TrimSpace(line)) == 0 {
+			continue
+		}
+		parts1 := strings.SplitN(line, " [", 2)
+		if len(parts1) != 2 {
+			continue
+		}
+		chars := strings.SplitN(parts1[0], " ", 2)
+		if len(chars) != 2 {
+			continue
+		}
+		
+		parts2 := strings.SplitN(parts1[1], "] /", 2)
+		if len(parts2) != 2 {
+			continue
+		}
+		
+		engStr := strings.TrimRight(parts2[1], "/\r")
+		engStr = strings.ReplaceAll(engStr, "/", "; ") // joining english definitions
+
+		_, err = stmt.Exec(chars[0], chars[1], parts2[0], engStr)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("Successfully created dict.db")
+}
